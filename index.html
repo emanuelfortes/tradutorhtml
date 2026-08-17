@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leitor de Mangá Traduzido</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root{
+    --bg:#14171c; --bg2:#1e2229; --bg3:#272c35; --fg:#e8eaed; --fg2:#9aa3af;
+    --accent:#e8930c; --ok:#3fb950; --err:#f85149; --radius:10px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{height:100%}
+  body{background:var(--bg); color:var(--fg); font-family:'Segoe UI',system-ui,-apple-system,sans-serif; overflow:hidden}
+
+  /* ---------- Tela inicial ---------- */
+  #setup{height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; padding:24px}
+  #setup h1{font-size:26px; font-weight:600}
+  #setup h1 span{color:var(--accent)}
+  #setup .card{background:var(--bg2); border:1px solid #333a45; border-radius:var(--radius); padding:22px; width:min(560px,100%); display:flex; flex-direction:column; gap:12px}
+  #setup label{font-size:13px; color:var(--fg2)}
+  #setup input[type=password], #setup input[type=text], #setup select{
+    background:var(--bg3); border:1px solid #3b434f; border-radius:6px; color:var(--fg);
+    padding:10px 12px; font-size:14px; width:100%; outline:none;
+  }
+  #setup input:focus, #setup select:focus{border-color:var(--accent)}
+  #setup small{color:var(--fg2); font-size:12px; line-height:1.5}
+  #setup small a{color:var(--accent)}
+  #drop{
+    border:2px dashed #3b434f; border-radius:var(--radius); padding:36px 20px; text-align:center;
+    cursor:pointer; transition:.15s; font-size:15px; color:var(--fg2);
+  }
+  #drop:hover, #drop.over{border-color:var(--accent); color:var(--fg); background:rgba(232,147,12,.06)}
+  #drop b{color:var(--accent)}
+  #setupErr{color:var(--err); font-size:13px; display:none}
+
+  /* ---------- Leitor ---------- */
+  #reader{display:none; height:100%; flex-direction:column}
+  #topbar{
+    display:flex; align-items:center; gap:6px; padding:6px 10px; background:var(--bg2);
+    border-bottom:1px solid #2c333d; flex-wrap:wrap; user-select:none;
+  }
+  #topbar .grow{flex:1}
+  .btn{
+    background:var(--bg3); border:1px solid #3b434f; color:var(--fg); border-radius:6px;
+    padding:6px 12px; font-size:13px; cursor:pointer; white-space:nowrap;
+  }
+  .btn:hover{border-color:var(--accent)}
+  .btn.active{background:var(--accent); border-color:var(--accent); color:#14171c; font-weight:600}
+  select.btn{padding:6px 8px}
+  #status{
+    font-size:12px; padding:4px 10px; border-radius:20px; background:var(--bg3);
+    border:1px solid #3b434f; color:var(--fg2); min-width:90px; text-align:center;
+  }
+  #status.working{color:var(--accent); border-color:var(--accent)}
+  #status.done{color:var(--ok); border-color:var(--ok)}
+  #status.error{color:var(--err); border-color:var(--err); cursor:pointer}
+
+  #stage{flex:1; position:relative; overflow:auto; display:flex; background:var(--bg)}
+  #pageWrap{position:relative; margin:auto; line-height:0}
+  #pageImg{display:block; user-select:none; -webkit-user-drag:none}
+  #stage.fitH #pageImg{max-height:calc(100vh - 46px); width:auto; max-width:none}
+  #stage.fitW #pageImg{width:100%; max-width:100vw; height:auto; max-height:none}
+
+  /* zonas de clique pra virar página */
+  .navzone{position:absolute; top:0; height:100%; width:28%; cursor:pointer; z-index:30}
+  #zoneL{left:0} #zoneR{right:0}
+  .navzone:hover{background:linear-gradient(to right, rgba(255,255,255,.035), transparent)}
+  #zoneR:hover{background:linear-gradient(to left, rgba(255,255,255,.035), transparent)}
+
+  /* overlays de tradução */
+  .ov{
+    position:absolute; z-index:20; display:flex; align-items:center; justify-content:center;
+    background:#fff; color:#111; border-radius:8px; padding:2px;
+    text-align:center; font-weight:600; line-height:1.15; overflow:hidden;
+    font-family:'Comic Sans MS','Segoe UI',sans-serif; word-break:break-word;
+    box-shadow:0 0 0 2px #fff, 0 1px 6px rgba(0,0,0,.35);
+  }
+  #pageWrap.showOriginal .ov{display:none}
+
+  #hint{
+    position:fixed; bottom:14px; left:50%; transform:translateX(-50%);
+    background:rgba(20,23,28,.9); border:1px solid #333a45; color:var(--fg2);
+    padding:8px 16px; border-radius:20px; font-size:12px; z-index:50; pointer-events:none;
+    transition:opacity .4s; white-space:nowrap;
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ TELA INICIAL ============ -->
+<div id="setup">
+  <h1>📖 Leitor de Mangá <span>Traduzido</span></h1>
+  <div class="card">
+    <div id="keyBlock" style="display:flex; flex-direction:column; gap:12px">
+      <label>Chave da Gemini API</label>
+      <input type="password" id="apiKey" placeholder="Cole sua chave aqui" autocomplete="off">
+      <small>Não tem chave? Crie grátis em <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> — clique em "Create API key". Não precisa de cartão. A chave fica salva só no seu navegador.</small>
+    </div>
+    <label style="margin-top:6px">Modelo</label>
+    <select id="modelSel">
+      <option value="">detectando modelos disponíveis…</option>
+    </select>
+    <label style="margin-top:6px">Sentido de leitura</label>
+    <select id="dirSel">
+      <option value="ltr">Ocidental (esquerda → direita)</option>
+      <option value="rtl">Mangá (direita → esquerda)</option>
+    </select>
+  </div>
+  <div class="card">
+    <div id="drop">Arraste o <b>.zip</b> com as páginas aqui<br>ou clique para escolher o arquivo<br><small style="margin-top:6px;display:block">(também aceita selecionar várias imagens soltas)</small></div>
+    <input type="file" id="fileInput" accept=".zip,image/*" multiple style="display:none">
+    <div id="setupErr"></div>
+  </div>
+</div>
+
+<!-- ============ LEITOR ============ -->
+<div id="reader">
+  <div id="topbar">
+    <button class="btn" id="btnBack" title="Voltar e escolher outro arquivo">☰</button>
+    <button class="btn" id="btnPrev">‹ Anterior</button>
+    <select class="btn" id="pageSel"></select>
+    <button class="btn" id="btnNext">Próxima ›</button>
+    <div class="grow"></div>
+    <div id="status">—</div>
+    <button class="btn" id="btnOrig" title="Segure para ver o original (ou tecla O)">Original</button>
+    <button class="btn active" id="btnFitH" title="Ajustar à altura">Fit ↕</button>
+    <button class="btn" id="btnFitW" title="Ajustar à largura">Fit ↔</button>
+    <button class="btn" id="btnFull" title="Tela cheia">⛶</button>
+  </div>
+  <div id="stage" class="fitH">
+    <div id="pageWrap">
+      <img id="pageImg" alt="página">
+    </div>
+    <div class="navzone" id="zoneL"></div>
+    <div class="navzone" id="zoneR"></div>
+  </div>
+</div>
+
+<div id="hint" style="opacity:0"></div>
+
+<script>
+'use strict';
+
+/* ================= Estado ================= */
+const state = {
+  pages: [],        // [{name, blob, url, base64:null, mime}]
+  idx: 0,
+  dir: 'ltr',
+  cache: {},        // idx -> {status:'pending'|'ok'|'error', boxes:[{box_2d,traducao}], err}
+  inflight: {},     // idx -> Promise
+  apiKey: '',
+  model: 'gemini-2.5-flash',
+};
+
+const $ = id => document.getElementById(id);
+const setupEl=$('setup'), readerEl=$('reader'), img=$('pageImg'), wrap=$('pageWrap'),
+      stage=$('stage'), statusEl=$('status'), pageSel=$('pageSel'), hintEl=$('hint');
+
+/* persistência da chave (funciona em arquivo local; falha silenciosa se bloqueado) */
+const store = {
+  get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
+  set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} },
+};
+/* chave embutida (uso pessoal — não compartilhe este arquivo) */
+const EMBEDDED_KEY = ''; // versão web: a chave é pedida uma vez e fica salva no navegador
+$('apiKey').value = EMBEDDED_KEY || store.get('gmk') || '';
+if(EMBEDDED_KEY) $('keyBlock').style.display = 'none';
+$('dirSel').value = store.get('gdir') || 'ltr';
+
+/* descobre automaticamente quais modelos a sua chave pode usar */
+async function populateModels(){
+  const key = $('apiKey').value.trim();
+  const sel = $('modelSel');
+  if(!key){ sel.innerHTML='<option value="">cole a chave primeiro</option>'; return; }
+  try{
+    let models=[], token='', pages=0;
+    do{
+      const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200'+(token?'&pageToken='+encodeURIComponent(token):''), {headers:{'x-goog-api-key':key}});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      const j=await r.json();
+      models.push(...(j.models||[]));
+      token=j.nextPageToken||''; pages++;
+    }while(token && pages<5);
+    const cand = models
+      .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
+      .map(m=>m.name.replace(/^models\//,''))
+      .filter(id=>/gemini/i.test(id) && !/(embedding|tts|audio|image|imagen|veo|live|native|computer|robotic|thinking)/i.test(id));
+    if(!cand.length) throw new Error('lista vazia');
+    const uniq=[...new Set(cand)];
+    const ver = id => { const m=id.match(/gemini-(\d+(?:\.\d+)?)/); return m?parseFloat(m[1]):0; };
+    const score = id => ver(id)*100 + (/flash/i.test(id)?10:0) + (/lite/i.test(id)?-3:0) + (/preview|exp/i.test(id)?-1:0) + (/latest/i.test(id)?-2:0);
+    uniq.sort((a,b)=>score(b)-score(a));
+    const top = uniq.slice(0,15);
+    sel.innerHTML = top.map(id=>`<option value="${id}">${id}</option>`).join('');
+    const cur = store.get('gmodel');
+    sel.value = top.includes(cur) ? cur : top[0];
+  }catch(e){
+    // fallback: lista fixa (pode ficar desatualizada)
+    sel.innerHTML = ['gemini-flash-latest','gemini-2.5-flash','gemini-2.5-pro']
+      .map(id=>`<option value="${id}">${id}</option>`).join('');
+    sel.value = 'gemini-flash-latest';
+  }
+}
+populateModels();
+$('apiKey').addEventListener('change', populateModels);
+
+/* ================= Upload / ZIP ================= */
+const drop=$('drop'), fileInput=$('fileInput');
+drop.addEventListener('click', ()=>fileInput.click());
+drop.addEventListener('dragover', e=>{e.preventDefault(); drop.classList.add('over');});
+drop.addEventListener('dragleave', ()=>drop.classList.remove('over'));
+drop.addEventListener('drop', e=>{e.preventDefault(); drop.classList.remove('over'); handleFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change', ()=>handleFiles(fileInput.files));
+
+const IMG_RE = /\.(jpe?g|png|webp|gif|bmp)$/i;
+const mimeOf = n => n.match(/\.png$/i)?'image/png' : n.match(/\.webp$/i)?'image/webp' : n.match(/\.gif$/i)?'image/gif' : n.match(/\.bmp$/i)?'image/bmp' : 'image/jpeg';
+const natSort = (a,b)=>a.localeCompare(b, undefined, {numeric:true, sensitivity:'base'});
+
+async function handleFiles(files){
+  const err = $('setupErr'); err.style.display='none';
+  if(!files || !files.length) return;
+  try{
+    let pages=[];
+    const list=[...files];
+    if(list.length===1 && /\.zip$/i.test(list[0].name)){
+      const zip = await JSZip.loadAsync(list[0]);
+      const entries = Object.values(zip.files)
+        .filter(f=>!f.dir && IMG_RE.test(f.name) && !f.name.split('/').pop().startsWith('.'))
+        .sort((a,b)=>natSort(a.name,b.name));
+      if(!entries.length) throw new Error('Nenhuma imagem encontrada dentro do zip.');
+      for(const e of entries){
+        const blob = await e.async('blob');
+        pages.push({name:e.name, blob, url:URL.createObjectURL(blob), mime:mimeOf(e.name), base64:null});
+      }
+    } else {
+      const imgs = list.filter(f=>IMG_RE.test(f.name)).sort((a,b)=>natSort(a.name,b.name));
+      if(!imgs.length) throw new Error('Envie um .zip com imagens ou selecione arquivos de imagem.');
+      pages = imgs.map(f=>({name:f.name, blob:f, url:URL.createObjectURL(f), mime:mimeOf(f.name), base64:null}));
+    }
+    startReader(pages);
+  }catch(e){
+    err.textContent = '⚠ ' + e.message; err.style.display='block';
+  }
+}
+
+/* ================= Leitor ================= */
+async function startReader(pages){
+  state.apiKey = $('apiKey').value.trim();
+  if(!$('modelSel').value) await populateModels();
+  state.model  = $('modelSel').value || 'gemini-flash-latest';
+  state.dir    = $('dirSel').value;
+  if(!state.apiKey){
+    const err=$('setupErr');
+    err.textContent='⚠ Cole sua chave da Gemini API primeiro.'; err.style.display='block';
+    return;
+  }
+  store.set('gmk', state.apiKey); store.set('gmodel', state.model); store.set('gdir', state.dir);
+
+  // limpa estado anterior
+  state.pages.forEach(p=>URL.revokeObjectURL(p.url));
+  state.pages = pages; state.idx = 0; state.cache = {}; state.inflight = {};
+
+  pageSel.innerHTML = pages.map((p,i)=>`<option value="${i}">Página ${i+1} / ${pages.length}</option>`).join('');
+  setupEl.style.display='none'; readerEl.style.display='flex';
+  showPage(0);
+  showHint(state.dir==='rtl' ? 'Sentido mangá: ← avança, → volta' : 'Use ← → ou clique nas laterais para navegar');
+}
+
+function showPage(i){
+  if(i<0 || i>=state.pages.length) return;
+  state.idx=i; pageSel.value=i;
+  clearOverlays();
+  img.src = state.pages[i].url;
+  img.onload = ()=>{ renderOverlays(); };
+  translatePage(i).then(()=>{ if(state.idx===i) renderOverlays(); updateStatus(); }).catch(()=>{});
+  updateStatus();
+  // pré-carrega e pré-traduz a próxima (pra virada de página ficar instantânea)
+  if(i+1 < state.pages.length){
+    const nx=new Image(); nx.src=state.pages[i+1].url;
+    translatePage(i+1).catch(()=>{});
+  }
+}
+
+const next=()=>showPage(state.idx+1), prev=()=>showPage(state.idx-1);
+const fwd = ()=> state.dir==='rtl' ? prev() : next();
+const bck = ()=> state.dir==='rtl' ? next() : prev();
+
+$('btnNext').onclick=next; $('btnPrev').onclick=prev;
+$('zoneR').onclick=()=> state.dir==='rtl' ? prev() : next();
+$('zoneL').onclick=()=> state.dir==='rtl' ? next() : prev();
+pageSel.onchange=()=>showPage(+pageSel.value);
+$('btnBack').onclick=()=>{ readerEl.style.display='none'; setupEl.style.display='flex'; };
+$('btnFull').onclick=()=>{ document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); };
+$('btnFitH').onclick=()=>setFit('fitH'); $('btnFitW').onclick=()=>setFit('fitW');
+function setFit(m){
+  stage.className=m;
+  $('btnFitH').classList.toggle('active', m==='fitH');
+  $('btnFitW').classList.toggle('active', m==='fitW');
+  requestAnimationFrame(renderOverlays);
+}
+
+/* ver original: segurar botão ou tecla O */
+const showOrig = on => wrap.classList.toggle('showOriginal', on);
+$('btnOrig').onpointerdown=()=>showOrig(true);
+$('btnOrig').onpointerup=$('btnOrig').onpointerleave=()=>showOrig(false);
+
+document.addEventListener('keydown', e=>{
+  if(readerEl.style.display==='none'||!readerEl.style.display) return;
+  if(e.key==='ArrowRight') state.dir==='rtl'?prev():next();
+  else if(e.key==='ArrowLeft') state.dir==='rtl'?next():prev();
+  else if(e.key.toLowerCase()==='o' && !e.repeat) showOrig(true);
+  else if(e.key==='f') $('btnFull').click();
+});
+document.addEventListener('keyup', e=>{ if(e.key.toLowerCase()==='o') showOrig(false); });
+
+statusEl.onclick=()=>{ // clicar no erro tenta de novo
+  const c=state.cache[state.idx];
+  if(c && c.status==='error'){ delete state.cache[state.idx]; showPage(state.idx); }
+};
+
+function updateStatus(){
+  const c = state.cache[state.idx];
+  statusEl.className='';
+  if(!c || c.status==='pending'){ statusEl.textContent='Traduzindo…'; statusEl.classList.add('working'); }
+  else if(c.status==='ok'){ statusEl.textContent = c.boxes.length ? `✓ ${c.boxes.length} balões` : '✓ sem texto'; statusEl.classList.add('done'); }
+  else { statusEl.textContent='✗ erro — clique p/ tentar de novo'; statusEl.classList.add('error'); }
+}
+
+function showHint(msg, ms){
+  hintEl.textContent=msg; hintEl.style.opacity=1; hintEl.style.whiteSpace='normal'; hintEl.style.maxWidth='90vw';
+  clearTimeout(hintEl._t); hintEl._t=setTimeout(()=>hintEl.style.opacity=0, ms||4000);
+}
+
+/* ================= Overlays ================= */
+function clearOverlays(){ wrap.querySelectorAll('.ov').forEach(o=>o.remove()); }
+
+function renderOverlays(){
+  clearOverlays();
+  const c = state.cache[state.idx];
+  if(!c || c.status!=='ok') return;
+  for(const b of c.boxes){
+    if(!Array.isArray(b.box_2d) || b.box_2d.length!==4) continue;
+    let [y1,x1,y2,x2] = b.box_2d.map(v=>Math.max(0,Math.min(1000,v)));
+    if(y2<=y1 || x2<=x1) continue;
+    // margem pequena pra cobrir bem o texto original
+    const pad = 4;
+    y1=Math.max(0,y1-pad); x1=Math.max(0,x1-pad); y2=Math.min(1000,y2+pad); x2=Math.min(1000,x2+pad);
+    const d=document.createElement('div');
+    d.className='ov';
+    d.style.top=(y1/10)+'%'; d.style.left=(x1/10)+'%';
+    d.style.height=((y2-y1)/10)+'%'; d.style.width=((x2-x1)/10)+'%';
+    d.textContent=b.traducao||'';
+    d.title=b.original||'';
+    wrap.appendChild(d);
+  }
+  fitAllText();
+}
+
+/* ajusta o tamanho da fonte pra caber na caixa */
+function fitAllText(){
+  wrap.querySelectorAll('.ov').forEach(d=>{
+    const h=d.clientHeight, w=d.clientWidth;
+    if(!h||!w||!d.textContent) return;
+    let lo=6, hi=Math.min(48, Math.floor(h*0.9));
+    while(lo<hi){
+      const mid=Math.ceil((lo+hi)/2);
+      d.style.fontSize=mid+'px';
+      if(d.scrollHeight<=h && d.scrollWidth<=w) lo=mid; else hi=mid-1;
+    }
+    d.style.fontSize=lo+'px';
+  });
+}
+window.addEventListener('resize', ()=>{ clearTimeout(window._rz); window._rz=setTimeout(fitAllText,150); });
+
+/* ================= Gemini API ================= */
+async function getBase64(page){
+  if(page.base64) return page.base64;
+  // reduz a imagem pra economizar tokens/tempo (as coordenadas são normalizadas, então não afeta o overlay)
+  const bmp = await createImageBitmap(page.blob).catch(()=>null);
+  if(bmp){
+    const MAX=1600, sc=Math.min(1, MAX/Math.max(bmp.width,bmp.height));
+    const cv=document.createElement('canvas');
+    cv.width=Math.round(bmp.width*sc); cv.height=Math.round(bmp.height*sc);
+    cv.getContext('2d').drawImage(bmp,0,0,cv.width,cv.height);
+    bmp.close();
+    page.base64 = cv.toDataURL('image/jpeg',0.85).split(',')[1];
+    page.mimeSend='image/jpeg';
+  } else {
+    page.base64 = await new Promise((res,rej)=>{
+      const r=new FileReader();
+      r.onload=()=>res(r.result.split(',')[1]);
+      r.onerror=rej; r.readAsDataURL(page.blob);
+    });
+    page.mimeSend=page.mime;
+  }
+  return page.base64;
+}
+
+const PROMPT = `Você é um tradutor profissional de mangás e quadrinhos.
+Detecte TODOS os blocos de texto nesta imagem: balões de fala, caixas de narração e textos importantes.
+Para cada bloco retorne:
+- "box_2d": [ymin, xmin, ymax, xmax] com coordenadas normalizadas de 0 a 1000, cobrindo APENAS a área do texto (não o balão inteiro);
+- "original": o texto original transcrito;
+- "traducao": tradução natural e fluida para português do Brasil, mantendo o tom da fala (coloquial, formal, gíria etc).
+Ignore onomatopeias desenhadas que fazem parte da arte. Se não houver texto, retorne uma lista vazia.`;
+
+const SCHEMA = {
+  type:"ARRAY",
+  items:{
+    type:"OBJECT",
+    properties:{
+      box_2d:{type:"ARRAY", items:{type:"INTEGER"}},
+      original:{type:"STRING"},
+      traducao:{type:"STRING"}
+    },
+    required:["box_2d","traducao"]
+  }
+};
+
+function translatePage(i){
+  if(state.cache[i] && state.cache[i].status==='ok') return Promise.resolve();
+  if(state.inflight[i]) return state.inflight[i];
+  state.cache[i]={status:'pending'};
+  const p = (async()=>{
+    const page=state.pages[i];
+    const b64=await getBase64(page);
+    const body={
+      contents:[{parts:[
+        {inline_data:{mime_type:page.mimeSend||page.mime, data:b64}},
+        {text:PROMPT}
+      ]}],
+      generationConfig:{
+        responseMimeType:"application/json",
+        responseSchema:SCHEMA,
+        temperature:0.2
+      }
+    };
+    let lastErr;
+    for(let attempt=0; attempt<3; attempt++){
+      try{
+        const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${state.model}:generateContent`,{
+          method:'POST',
+          headers:{'Content-Type':'application/json', 'x-goog-api-key':state.apiKey},
+          body:JSON.stringify(body)
+        });
+        if(r.status===429){ // limite por minuto do plano grátis — espera e tenta de novo
+          showHint('Limite de requisições por minuto atingido, aguardando…');
+          await new Promise(res=>setTimeout(res, 20000*(attempt+1)));
+          continue;
+        }
+        if(!r.ok){
+          const j=await r.json().catch(()=>({}));
+          throw new Error(j.error?.message || ('HTTP '+r.status));
+        }
+        const j=await r.json();
+        const txt=j.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('') || '[]';
+        let boxes;
+        try{ boxes=JSON.parse(txt); }catch(e){ boxes=[]; }
+        if(!Array.isArray(boxes)) boxes=[];
+        state.cache[i]={status:'ok', boxes};
+        return;
+      }catch(e){ lastErr=e; await new Promise(res=>setTimeout(res, 3000)); }
+    }
+    state.cache[i]={status:'error', err:lastErr?.message||'falhou'};
+    if(state.idx===i) showHint('Erro: '+(lastErr?.message||'falhou'), 12000);
+    throw lastErr;
+  })();
+  state.inflight[i]=p;
+  p.finally(()=>{ delete state.inflight[i]; if(state.idx===i){ updateStatus(); renderOverlays(); } });
+  return p;
+}
+</script>
+</body>
+</html>
