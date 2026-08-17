@@ -2,7 +2,10 @@
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mangá PT">
 <title>Leitor de Mangá Traduzido</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
@@ -84,6 +87,20 @@
     background:rgba(20,23,28,.9); border:1px solid #333a45; color:var(--fg2);
     padding:8px 16px; border-radius:20px; font-size:12px; z-index:50; pointer-events:none;
     transition:opacity .4s; white-space:nowrap;
+  }
+
+  /* mobile: barra de botões embaixo, na altura do dedão */
+  @media (max-width:700px){
+    #reader{flex-direction:column}
+    #stage{order:1}
+    #topbar{
+      order:2; border-bottom:none; border-top:1px solid #2c333d;
+      justify-content:center;
+      padding-bottom:calc(8px + env(safe-area-inset-bottom));
+    }
+    .btn{padding:9px 13px; font-size:14px}
+    #stage.fitH #pageImg{max-height:calc(100dvh - 110px)}
+    #hint{bottom:calc(env(safe-area-inset-bottom) + 118px)}
   }
 </style>
 </head>
