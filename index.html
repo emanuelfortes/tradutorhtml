@@ -111,9 +111,11 @@
   <h1>📖 Leitor de Mangá <span>Traduzido</span></h1>
   <div class="card">
     <div id="keyBlock" style="display:flex; flex-direction:column; gap:12px">
-      <label>Chave da Gemini API</label>
-      <input type="password" id="apiKey" placeholder="Cole sua chave aqui" autocomplete="off">
-      <small>Não tem chave? Crie grátis em <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> — clique em "Create API key". Não precisa de cartão. A chave fica salva só no seu navegador.</small>
+      <label>Chaves da Gemini API (a 1ª é obrigatória, as outras são opcionais)</label>
+      <input type="password" id="apiKey1" placeholder="Chave 1" autocomplete="off">
+      <input type="password" id="apiKey2" placeholder="Chave 2 (opcional)" autocomplete="off">
+      <input type="password" id="apiKey3" placeholder="Chave 3 (opcional)" autocomplete="off">
+      <small>Não tem chave? Crie grátis em <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> — clique em "Create API key". Não precisa de cartão. As chaves ficam salvas só no seu navegador.<br>Com 2 ou 3 chaves (cada uma de um <b>projeto diferente</b>), o site alterna entre elas e o limite por minuto multiplica.</small>
     </div>
     <label style="margin-top:6px">Modelo</label>
     <select id="modelSel">
@@ -167,9 +169,11 @@ const state = {
   dir: 'ltr',
   cache: {},        // idx -> {status:'pending'|'ok'|'error', boxes:[{box_2d,traducao}], err}
   inflight: {},     // idx -> Promise
-  apiKey: '',
+  apiKeys: [],      // rodízio de chaves
+  krot: 0,          // contador do rodízio
   model: 'gemini-2.5-flash',
 };
+const parseKeys = s => (s||'').trim().split(/[\s,;]+/).filter(Boolean);
 
 const $ = id => document.getElementById(id);
 const setupEl=$('setup'), readerEl=$('reader'), img=$('pageImg'), wrap=$('pageWrap'),
@@ -180,15 +184,20 @@ const store = {
   get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
   set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} },
 };
-/* chave embutida (uso pessoal — não compartilhe este arquivo) */
-const EMBEDDED_KEY = ''; // versão web: a chave é pedida uma vez e fica salva no navegador
-$('apiKey').value = EMBEDDED_KEY || store.get('gmk') || '';
+/* chave embutida (uso pessoal — não use em site público!) */
+const EMBEDDED_KEY = ''; // versão web: as chaves são pedidas uma vez e ficam salvas no navegador
+const keyInputs = ['apiKey1','apiKey2','apiKey3'].map(id=>$(id));
+const getKeys = () => EMBEDDED_KEY ? parseKeys(EMBEDDED_KEY) : parseKeys(keyInputs.map(i=>i.value).join(','));
+{
+  const saved = parseKeys(store.get('gmk')||'');
+  keyInputs.forEach((inp,i)=>{ inp.value = saved[i]||''; });
+}
 if(EMBEDDED_KEY) $('keyBlock').style.display = 'none';
 $('dirSel').value = store.get('gdir') || 'ltr';
 
 /* descobre automaticamente quais modelos a sua chave pode usar */
 async function populateModels(){
-  const key = $('apiKey').value.trim();
+  const key = getKeys()[0] || '';
   const sel = $('modelSel');
   if(!key){ sel.innerHTML='<option value="">cole a chave primeiro</option>'; return; }
   try{
@@ -221,7 +230,7 @@ async function populateModels(){
   }
 }
 populateModels();
-$('apiKey').addEventListener('change', populateModels);
+keyInputs.forEach(inp=>inp.addEventListener('change', populateModels));
 
 /* ================= Upload / ZIP ================= */
 const drop=$('drop'), fileInput=$('fileInput');
@@ -264,16 +273,16 @@ async function handleFiles(files){
 
 /* ================= Leitor ================= */
 async function startReader(pages){
-  state.apiKey = $('apiKey').value.trim();
+  state.apiKeys = getKeys();
   if(!$('modelSel').value) await populateModels();
   state.model  = $('modelSel').value || 'gemini-flash-latest';
   state.dir    = $('dirSel').value;
-  if(!state.apiKey){
+  if(!state.apiKeys.length){
     const err=$('setupErr');
-    err.textContent='⚠ Cole sua chave da Gemini API primeiro.'; err.style.display='block';
+    err.textContent='⚠ Cole pelo menos a Chave 1 da Gemini API.'; err.style.display='block';
     return;
   }
-  store.set('gmk', state.apiKey); store.set('gmodel', state.model); store.set('gdir', state.dir);
+  store.set('gmk', state.apiKeys.join(', ')); store.set('gmodel', state.model); store.set('gdir', state.dir);
 
   // limpa estado anterior
   state.pages.forEach(p=>URL.revokeObjectURL(p.url));
@@ -455,18 +464,26 @@ function translatePage(i){
       }
     };
     let lastErr;
-    for(let attempt=0; attempt<3; attempt++){
+    const nKeys = Math.max(1, state.apiKeys.length);
+    let rl = 0; // 429 seguidos (pra saber quando TODAS as chaves estão no limite)
+    for(let attempt=0; attempt<Math.max(4, nKeys*3); attempt++){
+      const key = state.apiKeys[(state.krot++) % nKeys] || ''; // rodízio: cada requisição usa a chave seguinte
       try{
         const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${state.model}:generateContent`,{
           method:'POST',
-          headers:{'Content-Type':'application/json', 'x-goog-api-key':state.apiKey},
+          headers:{'Content-Type':'application/json', 'x-goog-api-key':key},
           body:JSON.stringify(body)
         });
-        if(r.status===429){ // limite por minuto do plano grátis — espera e tenta de novo
-          showHint('Limite de requisições por minuto atingido, aguardando…');
-          await new Promise(res=>setTimeout(res, 20000*(attempt+1)));
+        if(r.status===429){ // limite por minuto — a próxima tentativa já usa outra chave; se todas limitadas, espera
+          rl++;
+          if(rl>=nKeys){
+            showHint(nKeys>1 ? 'Todas as chaves no limite por minuto, aguardando…' : 'Limite de requisições por minuto atingido, aguardando…');
+            await new Promise(res=>setTimeout(res, 20000));
+            rl=0;
+          }
           continue;
         }
+        rl=0;
         if(!r.ok){
           const j=await r.json().catch(()=>({}));
           throw new Error(j.error?.message || ('HTTP '+r.status));
